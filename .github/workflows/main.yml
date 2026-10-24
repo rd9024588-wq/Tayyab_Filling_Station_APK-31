@@ -1,0 +1,166 @@
+
+name: Tayyab Filling Station APK Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tayyab-apk-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Download repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            Tayyab_Filling_Station_APK_Cloud_Build/package-lock.json
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Find app project
+        id: project
+        shell: bash
+        run: |
+          set -e
+          if [ -f package.json ]; then
+            APP_DIR="."
+          elif [ -f Tayyab_Filling_Station_APK_Cloud_Build/package.json ]; then
+            APP_DIR="Tayyab_Filling_Station_APK_Cloud_Build"
+          else
+            echo "ERROR: package.json not found."
+            echo "Repository files:"
+            ls -la
+            exit 1
+          fi
+
+          echo "dir=$APP_DIR" >> "$GITHUB_OUTPUT"
+          echo "Using project directory: $APP_DIR"
+
+      - name: Install app dependencies
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: |
+          set -e
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Check project files
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: |
+          set -e
+          echo "Project files:"
+          ls -la
+          echo "Package configuration:"
+          node -e "console.log(JSON.stringify(require('./package.json'), null, 2))"
+
+      - name: Build web application if build script exists
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: |
+          set -e
+          if node -e "process.exit(require('./package.json').scripts?.build ? 0 : 1)"; then
+            npm run build
+          else
+            echo "No build script found; using existing web assets."
+          fi
+
+      - name: Verify web assets
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: |
+          set -e
+          if [ -f www/index.html ]; then
+            echo "Found www/index.html"
+          elif [ -f dist/index.html ]; then
+            echo "Found dist/index.html"
+          elif [ -f index.html ]; then
+            echo "Found root index.html"
+          else
+            echo "ERROR: No index.html found in www, dist, or project root."
+            exit 1
+          fi
+
+      - name: Prepare Capacitor Android project
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: |
+          set -e
+
+          if [ ! -f capacitor.config.json ] && \
+             [ ! -f capacitor.config.ts ] && \
+             [ ! -f capacitor.config.js ]; then
+            echo "ERROR: Capacitor configuration not found."
+            exit 1
+          fi
+
+          if [ ! -d android ]; then
+            echo "Creating Android project..."
+            npx cap add android
+          fi
+
+          npx cap sync android
+
+      - name: Build debug APK
+        working-directory: ${{ steps.project.outputs.dir }}/android
+        shell: bash
+        run: |
+          set -e
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace assembleDebug
+
+      - name: Verify APK
+        id: apk
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: |
+          set -e
+          APK="android/app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -f "$APK" ]; then
+            echo "ERROR: APK was not generated."
+            find android -type f -name "*.apk" -print || true
+            exit 1
+          fi
+
+          mkdir -p release
+          cp "$APK" release/Tayyab-Filling-Station-debug.apk
+          sha256sum release/Tayyab-Filling-Station-debug.apk
+          echo "APK_PATH=$APP_DIR/release/Tayyab-Filling-Station-debug.apk" >> "$GITHUB_ENV"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tayyab-Filling-Station-APK
+          path: ${{ steps.project.outputs.dir }}/release/Tayyab-Filling-Station-debug.apk
+          if-no-files-found: error
+          retention-days: 14
