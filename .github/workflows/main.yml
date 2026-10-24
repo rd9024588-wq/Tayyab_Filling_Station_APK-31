@@ -1,0 +1,115 @@
+
+name: Tayyab Filling Station APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Locate project
+        id: project
+        shell: bash
+        run: |
+          set -e
+          if [ -f package.json ]; then
+            DIR="."
+          elif [ -f Tayyab_Filling_Station_APK_Cloud_Build/package.json ]; then
+            DIR="Tayyab_Filling_Station_APK_Cloud_Build"
+          else
+            echo "::error::package.json not found"
+            find . -maxdepth 3 -type f | head -200
+            exit 1
+          fi
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        working-directory: ${{ steps.project.outputs.dir }}
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Build web app
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: |
+          if node -e "process.exit(require('./package.json').scripts?.build ? 0 : 1)"; then
+            npm run build
+          else
+            echo "No build script; checking existing web files."
+          fi
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Verify Capacitor project
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: |
+          set -e
+          if [ ! -f capacitor.config.json ] && \
+             [ ! -f capacitor.config.ts ] && \
+             [ ! -f capacitor.config.js ]; then
+            echo "::error::Capacitor configuration missing"
+            exit 1
+          fi
+
+          if [ ! -d android ]; then
+            npx cap add android
+          fi
+
+          npx cap sync android
+
+      - name: Build APK
+        working-directory: ${{ steps.project.outputs.dir }}/android
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleDebug
+
+      - name: Prepare APK
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: |
+          set -e
+          APK="android/app/build/outputs/apk/debug/app-debug.apk"
+          if [ ! -f "$APK" ]; then
+            echo "::error::APK file not found"
+            find android -name "*.apk" -print || true
+            exit 1
+          fi
+          mkdir -p release
+          cp "$APK" release/Tayyab-Filling-Station.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tayyab-Filling-Station-APK
+          path: ${{ steps.project.outputs.dir }}/release/Tayyab-Filling-Station.apk
+          if-no-files-found: error
+          retention-days: 14
